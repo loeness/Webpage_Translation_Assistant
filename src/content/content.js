@@ -1,10 +1,18 @@
 const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'CODE', 'PRE', 'TEXTAREA', 'INPUT']);
-const CONTENT_ROOT_SELECTORS = ['article', 'main', '[role="main"]', '#content', '.content', '.article', '.post', '.entry-content'];
 const DELIMITER_REGEX = /([,.;!?，。；！？\n]+)/g;
+const FEATURE_ENABLED_STORAGE_KEY = 'btvFeatureEnabled';
+const CLICK_TEXT_HIT_PADDING = 2;
+const CLICK_TEXT_MAX_DISTANCE = 8;
+const NAVIGATION_FORCE_REFRESH_WINDOW_MS = 1500;
 
 let tooltip = null;
+let featureEnabled = true;
+let lastKnownUrl = window.location.href;
+let navigationPreprocessTimer = null;
+let allowSnapshotForceRefreshUntil = 0;
+
 const textNodeSnapshots = new WeakMap();
-const pendingRoots = new Set();
+const pendingRoots = new Map();
 let flushTimer = null;
 
 function ensureTooltip() {
@@ -124,25 +132,15 @@ function preprocessRoot(root, force = false) {
 }
 
 function getPreprocessTargets() {
-    const targets = [];
-
-    for (const selector of CONTENT_ROOT_SELECTORS) {
-        document.querySelectorAll(selector).forEach((el) => {
-            if (!targets.includes(el)) {
-                targets.push(el);
-            }
-        });
+    if (document.body) {
+        return [document.body];
     }
 
-    if (targets.length === 0) {
-        if (document.body) {
-            targets.push(document.body);
-        } else {
-            targets.push(document.documentElement);
-        }
+    if (document.documentElement) {
+        return [document.documentElement];
     }
 
-    return targets;
+    return [];
 }
 
 function runFullPreprocess(force = false) {
@@ -150,30 +148,74 @@ function runFullPreprocess(force = false) {
     targets.forEach((target) => preprocessRoot(target, force));
 }
 
-function queueRootForPreprocess(root) {
+function queueRootForPreprocess(root, force = false) {
     if (!root) return;
-    pendingRoots.add(root);
+
+    const previousForce = pendingRoots.get(root) || false;
+    pendingRoots.set(root, previousForce || force);
 
     if (flushTimer !== null) return;
 
     flushTimer = window.setTimeout(() => {
-        pendingRoots.forEach((queuedRoot) => preprocessRoot(queuedRoot, false));
+        pendingRoots.forEach((queuedForce, queuedRoot) => preprocessRoot(queuedRoot, queuedForce));
         pendingRoots.clear();
         flushTimer = null;
     }, 120);
+}
+
+function scheduleForcedFullPreprocess(delay = 120) {
+    allowSnapshotForceRefreshUntil = Date.now() + NAVIGATION_FORCE_REFRESH_WINDOW_MS;
+
+    if (navigationPreprocessTimer !== null) {
+        window.clearTimeout(navigationPreprocessTimer);
+    }
+
+    navigationPreprocessTimer = window.setTimeout(() => {
+        navigationPreprocessTimer = null;
+        runFullPreprocess(true);
+    }, delay);
+}
+
+function maybeHandleUrlChange() {
+    const currentUrl = window.location.href;
+    if (currentUrl === lastKnownUrl) return;
+
+    lastKnownUrl = currentUrl;
+    scheduleForcedFullPreprocess(120);
+}
+
+function setupNavigationObservers() {
+    const originalPushState = history.pushState;
+    history.pushState = function patchedPushState(...args) {
+        const result = originalPushState.apply(this, args);
+        maybeHandleUrlChange();
+        return result;
+    };
+
+    const originalReplaceState = history.replaceState;
+    history.replaceState = function patchedReplaceState(...args) {
+        const result = originalReplaceState.apply(this, args);
+        maybeHandleUrlChange();
+        return result;
+    };
+
+    window.addEventListener('popstate', maybeHandleUrlChange, true);
+    window.addEventListener('hashchange', maybeHandleUrlChange, true);
 }
 
 function setupMutationObserver() {
     const observer = new MutationObserver((mutations) => {
         for (const mutation of mutations) {
             if (mutation.type === 'childList') {
-                mutation.addedNodes.forEach((node) => queueRootForPreprocess(node));
+                mutation.addedNodes.forEach((node) => queueRootForPreprocess(node, false));
             }
 
             if (mutation.type === 'characterData' && mutation.target instanceof Text) {
                 const textNode = mutation.target;
                 if (!textNodeSnapshots.has(textNode)) {
-                    queueRootForPreprocess(textNode);
+                    queueRootForPreprocess(textNode, false);
+                } else if (Date.now() <= allowSnapshotForceRefreshUntil) {
+                    queueRootForPreprocess(textNode, true);
                 }
             }
         }
@@ -234,6 +276,29 @@ function getCaretInfoFromPoint(clientX, clientY) {
     return null;
 }
 
+function getDistanceToRect(clientX, clientY, rect) {
+    const dx = clientX < rect.left ? rect.left - clientX : (clientX > rect.right ? clientX - rect.right : 0);
+    const dy = clientY < rect.top ? rect.top - clientY : (clientY > rect.bottom ? clientY - rect.bottom : 0);
+    return Math.hypot(dx, dy);
+}
+
+function isPointNearTextRange(range, clientX, clientY) {
+    const rects = Array.from(range.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0);
+    if (rects.length === 0) return false;
+
+    const hasDirectHit = rects.some((rect) => (
+        clientX >= rect.left - CLICK_TEXT_HIT_PADDING
+        && clientX <= rect.right + CLICK_TEXT_HIT_PADDING
+        && clientY >= rect.top - CLICK_TEXT_HIT_PADDING
+        && clientY <= rect.bottom + CLICK_TEXT_HIT_PADDING
+    ));
+
+    if (hasDirectHit) return true;
+
+    const minDistance = rects.reduce((min, rect) => Math.min(min, getDistanceToRect(clientX, clientY, rect)), Infinity);
+    return minDistance <= CLICK_TEXT_MAX_DISTANCE;
+}
+
 function mapDisplayIndexToOriginalIndex(displayIndex, displayLength, originalLength) {
     if (originalLength === 0) return -1;
     if (displayLength === originalLength) return displayIndex;
@@ -258,7 +323,24 @@ function getOriginalSegmentFromClick(clientX, clientY) {
     );
 
     if (displayIndex === -1) {
-        displayIndex = Math.max(0, displaySegments.length - 1);
+        displayIndex = displaySegments.findIndex((segment) => caret.offset === segment.end);
+    }
+
+    if (displayIndex === -1) return '';
+
+    const displaySegment = displaySegments[displayIndex];
+    if (!displaySegment) return '';
+
+    const hitRange = document.createRange();
+    try {
+        hitRange.setStart(caret.node, displaySegment.start);
+        hitRange.setEnd(caret.node, displaySegment.end);
+    } catch (_error) {
+        return '';
+    }
+
+    if (!isPointNearTextRange(hitRange, clientX, clientY)) {
+        return '';
     }
 
     const originalIndex = mapDisplayIndexToOriginalIndex(
@@ -338,7 +420,42 @@ function collectOriginalSegmentsFromSelection(selection) {
     return originals;
 }
 
+function setFeatureEnabled(enabled) {
+    featureEnabled = Boolean(enabled);
+    if (!featureEnabled) {
+        hideTooltip();
+    }
+}
+
+function synchronizeFeatureState() {
+    if (!chrome.storage || !chrome.storage.local) {
+        return;
+    }
+
+    chrome.storage.local.get(FEATURE_ENABLED_STORAGE_KEY, (result) => {
+        if (chrome.runtime.lastError) {
+            return;
+        }
+        setFeatureEnabled(result[FEATURE_ENABLED_STORAGE_KEY] !== false);
+    });
+
+    if (chrome.storage.onChanged) {
+        chrome.storage.onChanged.addListener((changes, areaName) => {
+            if (areaName !== 'local' || !changes[FEATURE_ENABLED_STORAGE_KEY]) {
+                return;
+            }
+
+            setFeatureEnabled(changes[FEATURE_ENABLED_STORAGE_KEY].newValue !== false);
+        });
+    }
+}
+
 document.addEventListener('click', (event) => {
+    if (!featureEnabled) {
+        hideTooltip();
+        return;
+    }
+
     const selection = window.getSelection();
     if (selection && selection.toString().trim().length > 0) return;
 
@@ -351,6 +468,11 @@ document.addEventListener('click', (event) => {
 });
 
 document.addEventListener('mouseup', (event) => {
+    if (!featureEnabled) {
+        hideTooltip();
+        return;
+    }
+
     const selection = window.getSelection();
     if (!selection) {
         hideTooltip();
@@ -373,17 +495,27 @@ document.addEventListener('scroll', hideTooltip, true);
 window.addEventListener('resize', hideTooltip);
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (!message || message.type !== 'BTV_PREPROCESS_NOW') {
+    if (!message || typeof message.type !== 'string') {
         return;
     }
 
-    runFullPreprocess(true);
-    sendResponse({ ok: true, time: Date.now() });
+    if (message.type === 'BTV_PREPROCESS_NOW') {
+        runFullPreprocess(true);
+        sendResponse({ ok: true, time: Date.now() });
+        return;
+    }
+
+    if (message.type === 'BTV_SET_ENABLED') {
+        setFeatureEnabled(Boolean(message.enabled));
+        sendResponse({ ok: true, enabled: featureEnabled });
+    }
 });
 
 function initialize() {
     runFullPreprocess(false);
     setupMutationObserver();
+    setupNavigationObservers();
+    synchronizeFeatureState();
 }
 
 if (document.readyState === 'loading') {

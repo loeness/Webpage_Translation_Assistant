@@ -47,6 +47,23 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.secondary-btn {
+  margin-top: 8px;
+  background: #334155;
+}
+
+.secondary-btn:hover {
+  background: #1e293b;
+}
+
+.secondary-btn.is-disabled {
+  background: #047857;
+}
+
+.secondary-btn.is-disabled:hover {
+  background: #059669;
+}
+
 #status {
   margin-top: 10px;
   min-height: 20px;
