@@ -4,9 +4,11 @@
 
 ## 演示动图
 
+##### 开关选项（先开启原文显示，再点击手动预处理）
 
 ![Switch Demo GIF](assets/demo/switch_demo.gif)
 
+##### 功能演示
 ![Click Demo GIF](assets/demo/click_demo.gif)
 
 
