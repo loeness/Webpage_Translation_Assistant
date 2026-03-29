@@ -1,4 +1,4 @@
-const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'CODE', 'PRE', 'TEXTAREA', 'INPUT']);
+const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'PRE', 'TEXTAREA', 'INPUT']);
 const BLOCK_BOUNDARY_TAGS = new Set([
     'P', 'LI', 'DT', 'DD', 'TD', 'TH',
     'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
@@ -34,6 +34,7 @@ let navigationPreprocessTimer = null;
 let allowSnapshotForceRefreshUntil = 0;
 
 const textNodeSnapshots = new WeakMap();
+const blockSnapshots = new WeakMap();
 const pendingRoots = new Map();
 let flushTimer = null;
 
@@ -633,42 +634,103 @@ function collectBlockBoundaries(root) {
     return boundaries;
 }
 
-function snapshotTextNode(textNode, force = false, boundaryElement = null) {
-    if (!(textNode instanceof Text)) return;
-    if (shouldSkipTextNode(textNode)) return;
+function collectBoundaryTextNodes(boundaryElement) {
+    const textNodes = [];
+    if (!boundaryElement) return textNodes;
 
-    const text = textNode.nodeValue || '';
-    if (text.trim().length === 0) return;
+    const walker = document.createTreeWalker(boundaryElement, NodeFilter.SHOW_TEXT);
+    let current = walker.nextNode();
+    while (current) {
+        if (!shouldSkipTextNode(current)) {
+            textNodes.push(current);
+        }
+        current = walker.nextNode();
+    }
 
-    if (!force && textNodeSnapshots.has(textNode)) return;
+    return textNodes;
+}
 
-    const segments = splitTextIntoSegments(text);
-    if (segments.length === 0) return;
+function buildBlockOriginalSnapshot(boundaryElement, textNodes) {
+    if (!boundaryElement || !Array.isArray(textNodes) || textNodes.length === 0) {
+        return null;
+    }
 
-    const coarseSegments = splitTextIntoSegments(text, {
+    let originalText = '';
+    const nodeRanges = [];
+
+    textNodes.forEach((textNode) => {
+        const start = originalText.length;
+        const value = textNode.nodeValue || '';
+        originalText += value;
+        const end = originalText.length;
+
+        nodeRanges.push({
+            node: textNode,
+            start,
+            end
+        });
+    });
+
+    if (originalText.trim().length === 0) {
+        return null;
+    }
+
+    const segments = splitTextIntoSegments(originalText);
+    if (segments.length === 0) {
+        return null;
+    }
+
+    const coarseSegments = splitTextIntoSegments(originalText, {
         enableCommaSplit: false,
         enableMaxLength: false,
         enableTinyMerge: false
     });
 
-    textNodeSnapshots.set(textNode, {
-        originalText: text,
+    return {
+        boundaryElement,
+        blockTag: boundaryElement.tagName || 'UNKNOWN',
+        originalText,
         originalSegments: segments,
         originalCoarseSegments: coarseSegments.length > 0 ? coarseSegments : segments,
-        blockTag: boundaryElement?.tagName || textNode.parentElement?.tagName || 'UNKNOWN',
+        nodeRanges,
         indexedAt: Date.now()
+    };
+}
+
+function snapshotTextNode(textNode, blockSnapshot, nodeStart, nodeEnd) {
+    if (!(textNode instanceof Text)) return;
+    if (!blockSnapshot || !blockSnapshot.boundaryElement) return;
+
+    textNodeSnapshots.set(textNode, {
+        blockElement: blockSnapshot.boundaryElement,
+        blockTag: blockSnapshot.blockTag,
+        fullOriginalText: blockSnapshot.originalText,
+        segments: blockSnapshot.originalSegments,
+        offsetInBlock: nodeStart,
+        nodeOriginalStart: nodeStart,
+        nodeOriginalEnd: nodeEnd,
+        indexedAt: blockSnapshot.indexedAt
     });
 }
 
 function preprocessBoundary(boundaryElement, force = false) {
     if (!boundaryElement) return;
 
-    const walker = document.createTreeWalker(boundaryElement, NodeFilter.SHOW_TEXT);
-    let current = walker.nextNode();
-    while (current) {
-        snapshotTextNode(current, force, boundaryElement);
-        current = walker.nextNode();
+    // Keep original snapshots stable unless caller explicitly requests refresh.
+    if (!force && blockSnapshots.has(boundaryElement)) {
+        return;
     }
+
+    const textNodes = collectBoundaryTextNodes(boundaryElement);
+    const blockSnapshot = buildBlockOriginalSnapshot(boundaryElement, textNodes);
+    if (!blockSnapshot) {
+        return;
+    }
+
+    blockSnapshots.set(boundaryElement, blockSnapshot);
+    blockSnapshot.nodeRanges.forEach((nodeRange) => {
+        snapshotTextNode(nodeRange.node, blockSnapshot, nodeRange.start, nodeRange.end);
+    });
 }
 
 function preprocessRoot(root, force = false) {
@@ -929,35 +991,176 @@ function chooseFallbackOriginalText(snapshot, preferredIndex = -1) {
     return truncateTooltipText(originalText || originalSegments.map((segment) => segment.text).join(' '));
 }
 
+function getTextNodeOffsetInBlock(textNode, blockElement) {
+    if (!(textNode instanceof Text) || !(blockElement instanceof Element)) {
+        return -1;
+    }
+
+    const existing = textNodeSnapshots.get(textNode);
+    if (existing && existing.blockElement === blockElement && Number.isInteger(existing.offsetInBlock)) {
+        return existing.offsetInBlock;
+    }
+
+    let offset = 0;
+    const walker = document.createTreeWalker(blockElement, NodeFilter.SHOW_TEXT);
+    let current = walker.nextNode();
+
+    while (current) {
+        if (shouldSkipTextNode(current)) {
+            current = walker.nextNode();
+            continue;
+        }
+
+        if (current === textNode) {
+            return offset;
+        }
+
+        offset += (current.nodeValue || '').length;
+        current = walker.nextNode();
+    }
+
+    return -1;
+}
+
+function buildBlockDisplayProjection(blockSnapshot) {
+    if (!blockSnapshot || !(blockSnapshot.boundaryElement instanceof Element)) {
+        return null;
+    }
+
+    const textNodes = collectBoundaryTextNodes(blockSnapshot.boundaryElement);
+    if (textNodes.length === 0) {
+        return null;
+    }
+
+    let displayText = '';
+    const nodeRanges = [];
+
+    textNodes.forEach((textNode) => {
+        if (!(textNode instanceof Text)) return;
+        if (!textNode.isConnected) return;
+        if (shouldSkipTextNode(textNode)) return;
+
+        const start = displayText.length;
+        const value = textNode.nodeValue || '';
+        displayText += value;
+        const end = displayText.length;
+
+        nodeRanges.push({
+            node: textNode,
+            start,
+            end
+        });
+    });
+
+    return {
+        displayText,
+        nodeRanges,
+        totalLength: displayText.length
+    };
+}
+
+function findSegmentIndexByOffset(segments, offset) {
+    if (!Array.isArray(segments) || segments.length === 0) {
+        return -1;
+    }
+
+    let index = segments.findIndex(
+        (segment) => offset >= segment.start && offset < segment.end
+    );
+
+    if (index === -1) {
+        index = segments.findIndex((segment) => offset === segment.end);
+    }
+
+    return index;
+}
+
+function resolveNodeOffsetInProjection(projection, globalOffset) {
+    if (!projection || !Array.isArray(projection.nodeRanges) || projection.nodeRanges.length === 0) {
+        return null;
+    }
+
+    const clampedOffset = Math.max(0, Math.min(globalOffset, projection.totalLength));
+
+    for (const nodeRange of projection.nodeRanges) {
+        if (clampedOffset < nodeRange.start || clampedOffset > nodeRange.end) {
+            continue;
+        }
+
+        const nodeTextLength = (nodeRange.node.nodeValue || '').length;
+        const localOffset = Math.max(0, Math.min(nodeTextLength, clampedOffset - nodeRange.start));
+        return {
+            node: nodeRange.node,
+            offset: localOffset
+        };
+    }
+
+    if (clampedOffset <= 0) {
+        return {
+            node: projection.nodeRanges[0].node,
+            offset: 0
+        };
+    }
+
+    const last = projection.nodeRanges[projection.nodeRanges.length - 1];
+    return {
+        node: last.node,
+        offset: (last.node.nodeValue || '').length
+    };
+}
+
+function createRangeFromProjection(projection, startOffset, endOffset) {
+    const startPoint = resolveNodeOffsetInProjection(projection, startOffset);
+    const endPoint = resolveNodeOffsetInProjection(projection, endOffset);
+    if (!startPoint || !endPoint) {
+        return null;
+    }
+
+    const range = document.createRange();
+    try {
+        range.setStart(startPoint.node, startPoint.offset);
+        range.setEnd(endPoint.node, endPoint.offset);
+    } catch (_error) {
+        return null;
+    }
+
+    return range;
+}
+
 function getOriginalSegmentFromClick(clientX, clientY) {
     const caret = getCaretInfoFromPoint(clientX, clientY);
     if (!caret || !(caret.node instanceof Text)) return '';
 
-    const snapshot = textNodeSnapshots.get(caret.node);
-    if (!snapshot) return '';
+    const textNodeSnapshot = textNodeSnapshots.get(caret.node);
+    const boundaryElement = textNodeSnapshot?.blockElement
+        || getBlockBoundaryElement(caret.node.parentElement);
+    if (!boundaryElement) return '';
 
-    const displayText = caret.node.nodeValue || '';
-    const displaySegments = splitTextIntoSegments(displayText);
+    const blockSnapshot = blockSnapshots.get(boundaryElement);
+    if (!blockSnapshot) return '';
+
+    const projection = buildBlockDisplayProjection(blockSnapshot);
+    if (!projection || projection.displayText.trim().length === 0) return '';
+
+    const targetNodeRange = projection.nodeRanges.find((item) => item.node === caret.node);
+    if (!targetNodeRange) return '';
+
+    const nodeTextLength = (caret.node.nodeValue || '').length;
+    const safeCaretOffset = Math.max(0, Math.min(caret.offset, nodeTextLength));
+    const displayOffset = targetNodeRange.start + safeCaretOffset;
+
+    const displaySegments = splitTextIntoSegments(projection.displayText);
     if (displaySegments.length === 0) return '';
 
-    let displayIndex = displaySegments.findIndex(
-        (segment) => caret.offset >= segment.start && caret.offset < segment.end
-    );
-
-    if (displayIndex === -1) {
-        displayIndex = displaySegments.findIndex((segment) => caret.offset === segment.end);
-    }
+    const displayIndex = findSegmentIndexByOffset(displaySegments, displayOffset);
 
     if (displayIndex === -1) return '';
 
     const displaySegment = displaySegments[displayIndex];
     if (!displaySegment) return '';
 
-    const hitRange = document.createRange();
-    try {
-        hitRange.setStart(caret.node, displaySegment.start);
-        hitRange.setEnd(caret.node, displaySegment.end);
-    } catch (_error) {
+    const hitRange = createRangeFromProjection(projection, displaySegment.start, displaySegment.end);
+    if (!hitRange) {
         return '';
     }
 
@@ -967,25 +1170,39 @@ function getOriginalSegmentFromClick(clientX, clientY) {
 
     const mapping = mapDisplaySegmentToOriginal(
         displaySegments,
-        snapshot.originalSegments,
+        blockSnapshot.originalSegments,
         displayIndex,
-        displayText,
-        snapshot.originalText
+        projection.displayText,
+        blockSnapshot.originalText
     );
 
+    const absoluteOffsetInBlock = getTextNodeOffsetInBlock(caret.node, boundaryElement);
+    const absoluteOriginalIndex = absoluteOffsetInBlock >= 0
+        ? findSegmentIndexByOffset(
+            blockSnapshot.originalSegments,
+            absoluteOffsetInBlock + safeCaretOffset
+        )
+        : -1;
+
     if (mapping.index < 0) {
+        if (absoluteOriginalIndex >= 0) {
+            return chooseFallbackOriginalText(blockSnapshot, absoluteOriginalIndex);
+        }
         return '';
     }
 
-    if (displaySegments.length === 1 && snapshot.originalSegments.length > 1) {
-        return chooseFallbackOriginalText(snapshot, mapping.index);
+    if (displaySegments.length === 1 && blockSnapshot.originalSegments.length > 1) {
+        return chooseFallbackOriginalText(blockSnapshot, mapping.index);
     }
 
     if (mapping.confidence < LOW_CONFIDENCE_THRESHOLD) {
-        return chooseFallbackOriginalText(snapshot, mapping.index);
+        if (absoluteOriginalIndex >= 0) {
+            return chooseFallbackOriginalText(blockSnapshot, absoluteOriginalIndex);
+        }
+        return chooseFallbackOriginalText(blockSnapshot, mapping.index);
     }
 
-    return snapshot.originalSegments[mapping.index]?.text || '';
+    return blockSnapshot.originalSegments[mapping.index]?.text || '';
 }
 
 function rangesIntersect(rangeA, rangeB) {
@@ -1008,59 +1225,72 @@ function collectOriginalSegmentsFromSelection(selection) {
 
     const originals = [];
     const seen = new Set();
+    const candidateBlocks = new Set();
     const walker = document.createTreeWalker(walkerRoot, NodeFilter.SHOW_TEXT);
 
     let textNode = walker.nextNode();
     while (textNode) {
-        const snapshot = textNodeSnapshots.get(textNode);
-        if (!snapshot) {
+        const textNodeSnapshot = textNodeSnapshots.get(textNode);
+        const boundaryElement = textNodeSnapshot?.blockElement
+            || getBlockBoundaryElement(textNode.parentElement);
+
+        if (!boundaryElement || !blockSnapshots.has(boundaryElement)) {
             textNode = walker.nextNode();
             continue;
         }
 
-        const displayText = textNode.nodeValue || '';
-        const displaySegments = splitTextIntoSegments(displayText);
-        if (displaySegments.length === 0) {
+        const nodeRange = document.createRange();
+        try {
+            nodeRange.selectNodeContents(textNode);
+        } catch (_error) {
             textNode = walker.nextNode();
             continue;
         }
 
-        for (let index = 0; index < displaySegments.length; index += 1) {
-            const displaySegment = displaySegments[index];
-            const segmentRange = document.createRange();
+        if (rangesIntersect(selectionRange, nodeRange)) {
+            candidateBlocks.add(boundaryElement);
+        }
 
-            try {
-                segmentRange.setStart(textNode, displaySegment.start);
-                segmentRange.setEnd(textNode, displaySegment.end);
-            } catch (_error) {
-                continue;
+        textNode = walker.nextNode();
+    }
+
+    candidateBlocks.forEach((blockElement) => {
+        const blockSnapshot = blockSnapshots.get(blockElement);
+        if (!blockSnapshot) return;
+
+        const projection = buildBlockDisplayProjection(blockSnapshot);
+        if (!projection || projection.displayText.trim().length === 0) return;
+
+        const displaySegments = splitTextIntoSegments(projection.displayText);
+        if (displaySegments.length === 0) return;
+
+        displaySegments.forEach((displaySegment, index) => {
+            const segmentRange = createRangeFromProjection(projection, displaySegment.start, displaySegment.end);
+            if (!segmentRange || !rangesIntersect(selectionRange, segmentRange)) {
+                return;
             }
-
-            if (!rangesIntersect(selectionRange, segmentRange)) continue;
 
             const mapping = mapDisplaySegmentToOriginal(
                 displaySegments,
-                snapshot.originalSegments,
+                blockSnapshot.originalSegments,
                 index,
-                displayText,
-                snapshot.originalText
+                projection.displayText,
+                blockSnapshot.originalText
             );
 
             let text = '';
             if (mapping.index >= 0 && mapping.confidence >= LOW_CONFIDENCE_THRESHOLD) {
-                text = snapshot.originalSegments[mapping.index]?.text || '';
+                text = blockSnapshot.originalSegments[mapping.index]?.text || '';
             } else {
-                text = chooseFallbackOriginalText(snapshot, mapping.index);
+                text = chooseFallbackOriginalText(blockSnapshot, mapping.index);
             }
 
             if (text && !seen.has(text)) {
                 seen.add(text);
                 originals.push(text);
             }
-        }
-
-        textNode = walker.nextNode();
-    }
+        });
+    });
 
     return originals;
 }
