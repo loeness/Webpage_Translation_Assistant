@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title data-i18n="popupTitle">Translate Recall</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <h1 data-i18n="popupHeading">Translate Recall</h1>
+  <section>
+    <div class="section-heading">
+      <h2 data-i18n="popupFeatureHeading">Original text display</h2>
+      <button id="toggle-feature-btn" class="compact-btn" type="button" data-i18n="popupTogglePause">Pause</button>
+    </div>
+    <p id="feature-status" class="muted"></p>
+  </section>
+
+  <section>
+    <h2 data-i18n="popupPageHeading">Current page</h2>
+    <p id="page-status" class="status" aria-live="polite"></p>
+    <button id="preprocess-btn" type="button" data-i18n="popupPreprocessButton">Prepare original text</button>
+    <details>
+      <summary data-i18n="popupRecoveryHeading">Recovery actions</summary>
+      <p data-i18n="popupRecoveryDescription">Use these only when the page state cannot be identified or page layout is affected.</p>
+      <button id="recapture-btn" class="secondary-btn" type="button" data-i18n="popupRecaptureButton">Confirm this is the original and recapture</button>
+      <button id="restore-btn" class="tertiary-btn" type="button" data-i18n="popupRestoreButton">Restore page structure</button>
+    </details>
+  </section>
+
+  <script src="popup.js"></script>
+</body>
+</html>

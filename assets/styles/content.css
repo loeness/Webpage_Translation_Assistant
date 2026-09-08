@@ -1,0 +1,81 @@
+/* The anchor is a custom inline element so common site rules such as p > span
+   do not alter the document layout. It intentionally inherits all typography. */
+btv-sentence {
+  all: revert;
+  display: inline !important;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+#bilingual-tooltip {
+  position: fixed;
+  box-sizing: border-box;
+  display: none;
+  grid-template-rows: minmax(0, 1fr) auto auto;
+  width: max-content;
+  max-width: min(600px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow: hidden;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: #27272a;
+  color: #fff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  font: 14px/1.55 "Microsoft YaHei", "Segoe UI", sans-serif;
+  z-index: 2147483647;
+  pointer-events: auto;
+}
+
+#bilingual-tooltip[style*="display: block"] {
+  display: grid !important;
+}
+
+#bilingual-tooltip .btv-tip-text {
+  min-width: 120px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+#bilingual-tooltip .btv-tip-status {
+  min-height: 0;
+  margin-top: 5px;
+  color: #bbf7d0;
+  font-size: 12px;
+}
+
+#bilingual-tooltip.has-missing .btv-tip-text {
+  color: #fef3c7;
+}
+
+#bilingual-tooltip .btv-tip-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+#bilingual-tooltip button {
+  width: auto;
+  min-width: 32px;
+  padding: 4px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+#bilingual-tooltip button:hover,
+#bilingual-tooltip button:focus-visible {
+  background: rgba(255, 255, 255, 0.2);
+  outline: none;
+}

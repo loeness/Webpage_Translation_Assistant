@@ -1,0 +1,118 @@
+:root {
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+  padding: 12px;
+  width: 310px;
+  font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+  background: #f7f7f3;
+  color: #1b1f24;
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: 15px;
+  line-height: 1.4;
+  color: #0f172a;
+}
+
+h2 {
+  margin: 0;
+  font-size: 13px;
+  color: #0f172a;
+}
+
+section {
+  padding: 10px;
+  border: 1px solid #dbe3e8;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+section + section { margin-top: 9px; }
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+p {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #334155;
+}
+
+.muted, .status { margin: 6px 0 9px; }
+.muted { color: #64748b; }
+.status.is-error { color: #b91c1c; }
+.status.is-success { color: #047857; }
+
+button {
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #0f766e;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+button:hover {
+  background: #0d9488;
+}
+
+button:disabled {
+  background: #94a3b8;
+  cursor: not-allowed;
+}
+
+.secondary-btn {
+  margin-top: 8px;
+  background: #334155;
+}
+
+.tertiary-btn {
+  margin-top: 7px;
+  border: 1px solid #94a3b8;
+  background: #ffffff;
+  color: #334155;
+}
+
+.tertiary-btn:hover { background: #f1f5f9; }
+
+.compact-btn {
+  width: auto;
+  padding: 6px 10px;
+  background: #334155;
+  font-size: 12px;
+}
+
+.compact-btn.is-disabled { background: #047857; }
+
+details { margin-top: 9px; }
+summary {
+  color: #475569;
+  font-size: 12px;
+  cursor: pointer;
+}
+details p { margin: 7px 0; }
+
+.secondary-btn:hover {
+  background: #1e293b;
+}
+
+.secondary-btn.is-disabled {
+  background: #047857;
+}
+
+.secondary-btn.is-disabled:hover {
+  background: #059669;
+}
